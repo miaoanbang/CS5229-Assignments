@@ -1,8 +1,8 @@
 #!/usr/bin/python
 
 """
-@Author <Name/Matricno>
-Date :
+@Author <Name/Matricno> Miao Anbang / A0091818X
+Date : 4 Sep 2019
 """
 
 
