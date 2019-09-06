@@ -1,8 +1,8 @@
 sudo ~/CS5229/Topology.py
 cd ~/CS5229/floodlight-1.2
-Java -Dlogback.configurationFile=logback.xml -jar target/floodlight.jar
+java -Dlogback.configurationFile=logback.xml -jar target/floodlight.jar
 ~/CS5229/Policy.py
-Curl http://localhost:8080/wm/core/switch/all/flow/json | python -m json.tool
+curl http://localhost:8080/wm/core/switch/all/flow/json | python -m json.tool
 localhost:8080/ui/index.html
 iperf3 -s -p <port no.>
 iperf3 -c 10.0.0.2 -p <port no.>

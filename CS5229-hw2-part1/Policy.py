@@ -96,7 +96,7 @@ def S2toS3():
     for port in range(1000, 1101):
         S2_UDP_Policy = {
             "switch": "00:00:00:00:00:00:00:02",
-            "name": "S2_UDP_Policy—_" + str(port),
+            "name": ''.join(["S2_UDP_Policy—_", str(port)]),
             "cookie": "0",
             "priority": "2",
             "in_port": "1",
@@ -110,7 +110,7 @@ def S2toS3():
 
         S3_UDP_Policy = {
             "switch": "00:00:00:00:00:00:00:03",
-            "name": "S3_UDP_Policy—_" + str(port),
+            "name": ''.join(["S3_UDP_Policy—_", str(port)]),
             "cookie": "0",
             "priority": "2",
             "in_port": "1",
