@@ -1,19 +1,27 @@
 @Author <Name/Matricno> Miao Anbang / A0091818X
 Date : 4 Sep 2019
 
+I don't have a way to output the log from xterm console thus I just screenshot the log. Please refer to the screenshot.
 
 ################################################
 Policy 1
 ################################################
-<Enter your comments here>
+Simply use a for loop to specify and push the udp port between 1000 and 1100
+I have tested using h3 as UDP server for port 1000, 1100, 1050, 999, only port 999 can go through.
+Please refer to Q1_log.png.
 
 ################################################
 Policy 2
 ################################################
-<Enter your comments here>
+Utilize mininet_add_queue.py queue 1
+The data packet is limited at 1Mbps from H1 to H2. But not the otherway around.
+Please refer to Q2_log.png.
 
 ################################################
 Policy 3
 ################################################
-<Enter your comments here>
+This makes Policy.py a long run python program. The script will constant fetch from floodlight for data flow information.
+Once the limit is reached at 20Mb or 10Mb, different queue policy will be pushed.
+There will be spikes when data is reached at the boundry point as fetching from floodlight server requires some time.
+Please refer to Q3_log.png.
 
