@@ -27,9 +27,11 @@ import org.python.modules._hashlib;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-
 /**
  * Created by pravein on 28/9/17.
+ * 
+ * @Author <Name/Matricno> Miao Anbang / A0091818X 
+ * Date : 6 Oct 2019
  */
 public class NAT implements IOFMessageListener, IFloodlightModule {
 
@@ -41,7 +43,6 @@ public class NAT implements IOFMessageListener, IFloodlightModule {
     HashMap<Integer, String> IPTransMap = new HashMap<>();
     HashMap<String, OFPort> IPPortMap = new HashMap<>();
     HashMap<String, String> IPMacMap = new HashMap<>();
-
 
     @Override
     public String getName() {
@@ -58,10 +59,6 @@ public class NAT implements IOFMessageListener, IFloodlightModule {
         return false;
     }
 
-
-
-
-
     // Main Place to Handle PacketIN to perform NAT
     private Command handlePacketIn(IOFSwitch sw, OFPacketIn pi, FloodlightContext cntx) {
         return Command.CONTINUE;
@@ -69,11 +66,11 @@ public class NAT implements IOFMessageListener, IFloodlightModule {
 
     @Override
     public Command receive(IOFSwitch sw, OFMessage msg, FloodlightContext cntx) {
-        switch(msg.getType()) {
-            case PACKET_IN:
-                return handlePacketIn(sw, (OFPacketIn)msg, cntx);
-            default:
-                break;
+        switch (msg.getType()) {
+        case PACKET_IN:
+            return handlePacketIn(sw, (OFPacketIn) msg, cntx);
+        default:
+            break;
         }
         logger.warn("Received unexpected message {}", msg);
         return Command.CONTINUE;
@@ -91,8 +88,7 @@ public class NAT implements IOFMessageListener, IFloodlightModule {
 
     @Override
     public Collection<Class<? extends IFloodlightService>> getModuleDependencies() {
-        Collection<Class<? extends IFloodlightService>> l =
-                new ArrayList<Class<? extends IFloodlightService>>();
+        Collection<Class<? extends IFloodlightService>> l = new ArrayList<Class<? extends IFloodlightService>>();
         l.add(IFloodlightProviderService.class);
         return l;
     }
@@ -106,16 +102,16 @@ public class NAT implements IOFMessageListener, IFloodlightModule {
         // Use the below HashMaps as per your need
 
         // Router Interface IP to Mac address Mappings
-        RouterInterfaceMacMap.put("10.0.0.1","00:23:10:00:00:01");
-        RouterInterfaceMacMap.put("192.168.0.1","00:23:10:00:00:02");
-        RouterInterfaceMacMap.put("192.168.0.2","00:23:10:00:00:03");
+        RouterInterfaceMacMap.put("10.0.0.1", "00:23:10:00:00:01");
+        RouterInterfaceMacMap.put("192.168.0.1", "00:23:10:00:00:02");
+        RouterInterfaceMacMap.put("192.168.0.2", "00:23:10:00:00:03");
 
         // IP to Router Interface mappings
         IPPortMap.put("192.168.0.10", OFPort.of(1));
         IPPortMap.put("192.168.0.20", OFPort.of(2));
         IPPortMap.put("10.0.0.11", OFPort.of(3));
 
-        //Client/Server ip to Mac mappings
+        // Client/Server ip to Mac mappings
         IPMacMap.put("192.168.0.10", "00:00:00:00:00:01");
         IPMacMap.put("192.168.0.20", "00:00:00:00:00:02");
         IPMacMap.put("10.0.0.11", "00:00:00:00:00:03");
