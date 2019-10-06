@@ -26,11 +26,20 @@ import org.projectfloodlight.openflow.types.*;
 import org.python.modules._hashlib;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import net.floodlightcontroller.packet.ARP;
+import net.floodlightcontroller.packet.Data;
+import net.floodlightcontroller.packet.Ethernet;
+import net.floodlightcontroller.packet.ICMP;
+import net.floodlightcontroller.packet.IPacket;
+import net.floodlightcontroller.packet.IPv4;
+import net.floodlightcontroller.packet.TCP;
+import net.floodlightcontroller.packet.UDP;
 
 /**
  * Created by pravein on 28/9/17.
  * 
  * @Author <Name/Matricno> Miao Anbang / A0091818X 
+ * 
  * Date : 6 Oct 2019
  */
 public class NAT implements IOFMessageListener, IFloodlightModule {
@@ -44,6 +53,10 @@ public class NAT implements IOFMessageListener, IFloodlightModule {
     HashMap<String, OFPort> IPPortMap = new HashMap<>();
     HashMap<String, String> IPMacMap = new HashMap<>();
 
+    protected HashMap<String, LBVip> vips;
+	protected HashMap<String, LBPool> pools;
+    protected HashMap<Integer, String> vipIpToId;
+    
     @Override
     public String getName() {
         return NAT.class.getName();
@@ -61,7 +74,109 @@ public class NAT implements IOFMessageListener, IFloodlightModule {
 
     // Main Place to Handle PacketIN to perform NAT
     private Command handlePacketIn(IOFSwitch sw, OFPacketIn pi, FloodlightContext cntx) {
+        Ethernet eth = IFloodlightProviderService.bcStore.get(cntx, IFloodlightProviderService.CONTEXT_PI_PAYLOAD);
+        IPacket pkt = eth.getPayload();
+
+        if (eth.isBroadcast() || eth.isMulticast()) {
+            // handle ARP for VIP
+            if (pkt instanceof ARP) {
+                // retrieve arp to determine target IP address
+                ARP arpRequest = (ARP) pkt;
+
+                IPv4Address targetProtocolAddress = arpRequest.getTargetProtocolAddress();
+
+                if (vipIpToId.containsKey(targetProtocolAddress.getInt())) {
+                    String vipId = vipIpToId.get(targetProtocolAddress.getInt());
+                    vipProxyArpReply(sw, pi, cntx, vipId);
+                    return Command.STOP;
+                }
+            }
+        } else {
+            // currently only load balance IPv4 packets - no-op for other traffic
+            if (pkt instanceof IPv4) {
+                IPv4 ip_pkt = (IPv4) pkt;
+
+                // If match Vip and port, check pool and choose member
+                int destIpAddress = ip_pkt.getDestinationAddress().getInt();
+
+                if (vipIpToId.containsKey(destIpAddress)) {
+                    IPClient client = new IPClient();
+                    client.ipAddress = ip_pkt.getSourceAddress();
+                    client.nw_proto = ip_pkt.getProtocol();
+                    if (ip_pkt.getPayload() instanceof TCP) {
+                        TCP tcp_pkt = (TCP) ip_pkt.getPayload();
+                        client.srcPort = tcp_pkt.getSourcePort();
+                        client.targetPort = tcp_pkt.getDestinationPort();
+                    }
+                    if (ip_pkt.getPayload() instanceof UDP) {
+                        UDP udp_pkt = (UDP) ip_pkt.getPayload();
+                        client.srcPort = udp_pkt.getSourcePort();
+                        client.targetPort = udp_pkt.getDestinationPort();
+                    }
+                    if (ip_pkt.getPayload() instanceof ICMP) {
+                        client.srcPort = TransportPort.of(8);
+                        client.targetPort = TransportPort.of(0);
+                    }
+
+                    LBVip vip = vips.get(vipIpToId.get(destIpAddress));
+                    if (vip == null) // fix dereference violations
+                        return Command.CONTINUE;
+                    LBPool pool = pools.get(vip.pickPool(client));
+                    if (pool == null) // fix dereference violations
+                        return Command.CONTINUE;
+                    LBMember member = members.get(pool.pickMember(client));
+                    if (member == null) // fix dereference violations
+                        return Command.CONTINUE;
+
+                    // for chosen member, check device manager and find and push routes, in both
+                    // directions
+                    pushBidirectionalVipRoutes(sw, pi, cntx, client, member);
+
+                    // packet out based on table rule
+                    pushPacket(pkt, sw, pi.getBufferId(),
+                            (pi.getVersion().compareTo(OFVersion.OF_12) < 0) ? pi.getInPort()
+                                    : pi.getMatch().get(MatchField.IN_PORT),
+                            OFPort.TABLE, cntx, true);
+
+                    return Command.STOP;
+                }
+            }
+        }
         return Command.CONTINUE;
+    }
+
+    protected void vipProxyArpReply(IOFSwitch sw, OFPacketIn pi, FloodlightContext cntx, String vipId) {
+        log.debug("vipProxyArpReply");
+
+        Ethernet eth = IFloodlightProviderService.bcStore.get(cntx, IFloodlightProviderService.CONTEXT_PI_PAYLOAD);
+
+        // retrieve original arp to determine host configured gw IP address
+        if (!(eth.getPayload() instanceof ARP))
+            return;
+        ARP arpRequest = (ARP) eth.getPayload();
+
+        // have to do proxy arp reply since at this point we cannot determine the
+        // requesting application type
+
+        // generate proxy ARP reply
+        IPacket arpReply = new Ethernet().setSourceMACAddress(vips.get(vipId).proxyMac)
+                .setDestinationMACAddress(eth.getSourceMACAddress()).setEtherType(EthType.ARP)
+                .setVlanID(eth.getVlanID()).setPriorityCode(eth.getPriorityCode())
+                .setPayload(new ARP().setHardwareType(ARP.HW_TYPE_ETHERNET).setProtocolType(ARP.PROTO_TYPE_IP)
+                        .setHardwareAddressLength((byte) 6).setProtocolAddressLength((byte) 4).setOpCode(ARP.OP_REPLY)
+                        .setSenderHardwareAddress(vips.get(vipId).proxyMac)
+                        .setSenderProtocolAddress(arpRequest.getTargetProtocolAddress())
+                        .setTargetHardwareAddress(eth.getSourceMACAddress())
+                        .setTargetProtocolAddress(arpRequest.getSenderProtocolAddress()));
+
+        // push ARP reply out
+        pushPacket(arpReply, sw, OFBufferId.NO_BUFFER, OFPort.ANY,
+                (pi.getVersion().compareTo(OFVersion.OF_12) < 0 ? pi.getInPort()
+                        : pi.getMatch().get(MatchField.IN_PORT)),
+                cntx, true);
+        log.debug("proxy ARP reply pushed as {}", IPv4.fromIPv4Address(vips.get(vipId).address));
+
+        return;
     }
 
     @Override
