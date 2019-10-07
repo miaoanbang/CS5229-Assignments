@@ -342,16 +342,19 @@ public class NAT implements IOFMessageListener, IFloodlightModule {
         floodlightProvider.addOFMessageListener(OFType.PACKET_IN, this);
 
         // execute task every 5 seconds to clear query id for timeout query id sesstions
-        ScheduledExecutorService scheduledExecutorService = Executors.newScheduledThreadPool(1);
-        scheduledExecutorService.scheduleAtFixedRate(() -> {
-            long currentTimeMillisecond = System.currentTimeMillis();
-            for (Map.Entry<Integer, Long> entry : queryIDToTimeoutMap.entrySet()) {
-                if ((currentTimeMillisecond - entry.getValue()) > QUERY_ID_TIMEOUT_MILLISECOND) {
-                    queryIDToTimeoutMap.remove(entry.getKey());
-                    queryIDToSourceIPMap.remove(entry.getKey());
-                    logger.info("Removed Query ID {}", entry.getKey());
+        Runnable task = new Runnable() {
+            public void run() {
+                long currentTimeMillisecond = System.currentTimeMillis();
+                for (Map.Entry<Integer, Long> entry : queryIDToTimeoutMap.entrySet()) {
+                    if ((currentTimeMillisecond - entry.getValue()) > QUERY_ID_TIMEOUT_MILLISECOND) {
+                        queryIDToTimeoutMap.remove(entry.getKey());
+                        queryIDToSourceIPMap.remove(entry.getKey());
+                        logger.info("Removed Query ID {}", entry.getKey());
+                    }
                 }
             }
-        }, 5, 5, TimeUnit.SECONDS);
+        };
+        ScheduledExecutorService scheduledExecutorService = Executors.newScheduledThreadPool(1);
+        scheduledExecutorService.scheduleAtFixedRate(task, 5, 5, TimeUnit.SECONDS);
     }
 }
