@@ -1,27 +1,37 @@
 @Author <Name/Matricno> Miao Anbang / A0091818X
-Date : 4 Sep 2019
+Date : 6 Oct 2019
 
-I don't have a way to output the log from xterm console thus I just screenshot the log. Please refer to the screenshot.
-
-################################################
-Policy 1
-################################################
-Simply use a for loop to specify and push the udp port between 1000 and 1100
-I have tested using h3 as UDP server for port 1000, 1100, 1050, 999, only port 999 can go through.
-Please refer to Q1_log.png.
+Please refer to the screenshot for the ping.
 
 ################################################
-Policy 2
+Subtask 1
 ################################################
-Utilize mininet_add_queue.py queue 1
-The data packet is limited at 1Mbps from H1 to H2. But not the otherway around.
-Please refer to Q2_log.png.
+Please refer to handlePacketIn, proxyArpReply function.
+Simply get the mac address mapping from RouterInterfaceMacMap and return it to source.
 
 ################################################
-Policy 3
+Subtask 2
 ################################################
-This makes Policy.py a long run python program. The script will constant fetch from floodlight for data flow information.
-Once the limit is reached at 20Mb or 10Mb, different queue policy will be pushed.
-There will be spikes when data is reached at the boundry point as fetching from floodlight server requires some time.
-Please refer to Q3_log.png.
+Please refer to handlePacketIn, processIcmpRequest function.
+The idea is to replace the incoming icmp request source address with the router interface address.
+When request comes in, parse the payload and extract query id from payload and put the mapping into queryIDToSourceIPMap for icmp reply.
+################################################
+Subtask 3
+################################################
+Please refer to handlePacketIn, processIcmpRequest function.
+The idea is to replace the incoming icmp reply destination address with the client address.
+Use the queryIDToSourceIPMap to get the destination address for the ping reply.
 
+################################################
+Subtask 4
+################################################
+Please refer to handlePacketIn, startUp function.
+When packet comes in, put the query id and current time into queryIDToTimeoutMap.
+At startup, register a schedule service to check queryIDToTimeoutMap one by one and clear the timeout query id related information from both queryIDToTimeoutMap, queryIDToSourceIPMap.
+
+################################################
+Subtask 5
+################################################ 
+One of the most common example I have found is UDP hole punching https://en.wikipedia.org/wiki/UDP_hole_punching
+It is widely used in p2p, direct client-to-client and VoIP.
+UDP hole punching establishes connectivity between two hosts communicating across one or more network address translators. Typically, third-party hosts on the public transit network are used to establish UDP port states that may be used for direct communications between the communicating hosts. Once port state has been successfully established and the hosts are communicating, port state may be maintained either by normal communications traffic, or in the prolonged absence thereof, by keep-alive packets, usually consisting of empty UDP packets or packets with minimal non-intrusive content.
