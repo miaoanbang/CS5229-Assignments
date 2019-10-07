@@ -1,0 +1,4 @@
+sudo ~/CS5229/Nat_Topology.py
+cd ~/CS5229/floodlight-1.2
+java -Dlogback.configurationFile=logback.xml -jar target/floodlight.jar
+python setupRoute.py client1/client2/server
