@@ -18,7 +18,12 @@ import org.projectfloodlight.openflow.protocol.*;
 import java.io.IOException;
 import java.util.*;
 import net.floodlightcontroller.core.IFloodlightProviderService;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
 import org.projectfloodlight.openflow.protocol.action.OFAction;
 import org.projectfloodlight.openflow.protocol.match.Match;
 import org.projectfloodlight.openflow.protocol.match.MatchField;
@@ -26,21 +31,13 @@ import org.projectfloodlight.openflow.types.*;
 import org.python.modules._hashlib;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import net.floodlightcontroller.packet.ARP;
-import net.floodlightcontroller.packet.Data;
-import net.floodlightcontroller.packet.Ethernet;
-import net.floodlightcontroller.packet.ICMP;
-import net.floodlightcontroller.packet.IPacket;
-import net.floodlightcontroller.packet.IPv4;
-import net.floodlightcontroller.packet.TCP;
-import net.floodlightcontroller.packet.UDP;
 
 /**
  * Created by pravein on 28/9/17.
  * 
- * @Author <Name/Matricno> Miao Anbang / A0091818X 
+ * @Author <Name/Matricno> Miao Anbang / A0091818X
  * 
- * Date : 6 Oct 2019
+ *         Date : 6 Oct 2019
  */
 public class NAT implements IOFMessageListener, IFloodlightModule {
 
@@ -52,11 +49,13 @@ public class NAT implements IOFMessageListener, IFloodlightModule {
     HashMap<Integer, String> IPTransMap = new HashMap<>();
     HashMap<String, OFPort> IPPortMap = new HashMap<>();
     HashMap<String, String> IPMacMap = new HashMap<>();
+    HashMap<String, String> IPRouterIPMap = new HashMap<>();
+    ConcurrentHashMap<Integer, String> queryIDToSourceIPMap = new ConcurrentHashMap<>();
+    ConcurrentHashMap<Integer, Long> queryIDToTimeoutMap = new ConcurrentHashMap<>();
 
-    protected HashMap<String, LBVip> vips;
-	protected HashMap<String, LBPool> pools;
-    protected HashMap<Integer, String> vipIpToId;
-    
+    // timeout after 1 minute
+    private static final long QUERY_ID_TIMEOUT_MILLISECOND = 60 * 1000;
+
     @Override
     public String getName() {
         return NAT.class.getName();
@@ -85,9 +84,9 @@ public class NAT implements IOFMessageListener, IFloodlightModule {
 
                 IPv4Address targetProtocolAddress = arpRequest.getTargetProtocolAddress();
 
-                if (vipIpToId.containsKey(targetProtocolAddress.getInt())) {
-                    String vipId = vipIpToId.get(targetProtocolAddress.getInt());
-                    vipProxyArpReply(sw, pi, cntx, vipId);
+                if (RouterInterfaceMacMap.containsKey(targetProtocolAddress.toString())) {
+                    String macAddress = RouterInterfaceMacMap.get(targetProtocolAddress.toString());
+                    proxyArpReply(sw, pi, cntx, macAddress);
                     return Command.STOP;
                 }
             }
@@ -96,57 +95,56 @@ public class NAT implements IOFMessageListener, IFloodlightModule {
             if (pkt instanceof IPv4) {
                 IPv4 ip_pkt = (IPv4) pkt;
 
-                // If match Vip and port, check pool and choose member
-                int destIpAddress = ip_pkt.getDestinationAddress().getInt();
+                // only for ICMP packets
+                if (ip_pkt.getPayload() instanceof ICMP) {
+                    ICMP icmp_payload = (ICMP) ip_pkt.getPayload();
+                    // get icmp type
+                    byte icmp_type = icmp_payload.getIcmpType();
+                    // get icmp payload
+                    byte[] icmp_payload_bytes = icmp_payload.serialize();
+                    // get icmp identifier as query id
+                    // icmp identifier are at byte 4-5 of the payload
+                    Integer query_id = (icmp_payload_bytes[4] & 0xFF) << 8 | (icmp_payload_bytes[5] & 0xFF);
 
-                if (vipIpToId.containsKey(destIpAddress)) {
-                    IPClient client = new IPClient();
-                    client.ipAddress = ip_pkt.getSourceAddress();
-                    client.nw_proto = ip_pkt.getProtocol();
-                    if (ip_pkt.getPayload() instanceof TCP) {
-                        TCP tcp_pkt = (TCP) ip_pkt.getPayload();
-                        client.srcPort = tcp_pkt.getSourcePort();
-                        client.targetPort = tcp_pkt.getDestinationPort();
+                    // handle icmp request/reply if query id is in queryIDToTimeoutMap
+                    if (queryIDToTimeoutMap.containsKey(query_id)) {
+                        queryIDToTimeoutMap.put(query_id, System.currentTimeMillis());
+                        if (icmp_type == ICMP.ECHO_REQUEST) {
+                            processIcmpRequest(sw, pi, cntx);
+                        } else if (icmp_type == ICMP.ECHO_REPLY) {
+                            processIcmpReply(sw, pi, cntx, queryIDToSourceIPMap.get(query_id));
+                        }
+                        return Command.STOP;
+                        // handle icmp request if query id is not in queryIDToTimeoutMap
+                    } else if (icmp_type == ICMP.ECHO_REQUEST) {
+                        String destinationIpAddress = ip_pkt.getDestinationAddress().toString();
+                        if (IPPortMap.containsKey(destinationIpAddress) && IPMacMap.containsKey(destinationIpAddress)
+                                && IPRouterIPMap.containsKey(destinationIpAddress)) {
+                            queryIDToSourceIPMap.put(query_id, ip_pkt.getSourceAddress().toString());
+                            queryIDToTimeoutMap.put(query_id, System.currentTimeMillis());
+                            processIcmpRequest(sw, pi, cntx);
+                            return Command.STOP;
+                        }
+                        // do nothing if timeout
+                    } else {
+                        return Command.STOP;
                     }
-                    if (ip_pkt.getPayload() instanceof UDP) {
-                        UDP udp_pkt = (UDP) ip_pkt.getPayload();
-                        client.srcPort = udp_pkt.getSourcePort();
-                        client.targetPort = udp_pkt.getDestinationPort();
-                    }
-                    if (ip_pkt.getPayload() instanceof ICMP) {
-                        client.srcPort = TransportPort.of(8);
-                        client.targetPort = TransportPort.of(0);
-                    }
-
-                    LBVip vip = vips.get(vipIpToId.get(destIpAddress));
-                    if (vip == null) // fix dereference violations
-                        return Command.CONTINUE;
-                    LBPool pool = pools.get(vip.pickPool(client));
-                    if (pool == null) // fix dereference violations
-                        return Command.CONTINUE;
-                    LBMember member = members.get(pool.pickMember(client));
-                    if (member == null) // fix dereference violations
-                        return Command.CONTINUE;
-
-                    // for chosen member, check device manager and find and push routes, in both
-                    // directions
-                    pushBidirectionalVipRoutes(sw, pi, cntx, client, member);
-
-                    // packet out based on table rule
-                    pushPacket(pkt, sw, pi.getBufferId(),
-                            (pi.getVersion().compareTo(OFVersion.OF_12) < 0) ? pi.getInPort()
-                                    : pi.getMatch().get(MatchField.IN_PORT),
-                            OFPort.TABLE, cntx, true);
-
-                    return Command.STOP;
                 }
             }
         }
         return Command.CONTINUE;
     }
 
-    protected void vipProxyArpReply(IOFSwitch sw, OFPacketIn pi, FloodlightContext cntx, String vipId) {
-        log.debug("vipProxyArpReply");
+    /**
+     * proxy Arp reply
+     * 
+     * @param IOFSwitch         sw
+     * @param OFPacketIn        pi
+     * @param FloodlightContext cntx
+     * @param String            macAddress
+     */
+    void proxyArpReply(IOFSwitch sw, OFPacketIn pi, FloodlightContext cntx, String macAddress) {
+        logger.debug("ProxyArpReply");
 
         Ethernet eth = IFloodlightProviderService.bcStore.get(cntx, IFloodlightProviderService.CONTEXT_PI_PAYLOAD);
 
@@ -159,12 +157,12 @@ public class NAT implements IOFMessageListener, IFloodlightModule {
         // requesting application type
 
         // generate proxy ARP reply
-        IPacket arpReply = new Ethernet().setSourceMACAddress(vips.get(vipId).proxyMac)
+        IPacket arpReply = new Ethernet().setSourceMACAddress(MacAddress.of(macAddress))
                 .setDestinationMACAddress(eth.getSourceMACAddress()).setEtherType(EthType.ARP)
                 .setVlanID(eth.getVlanID()).setPriorityCode(eth.getPriorityCode())
                 .setPayload(new ARP().setHardwareType(ARP.HW_TYPE_ETHERNET).setProtocolType(ARP.PROTO_TYPE_IP)
                         .setHardwareAddressLength((byte) 6).setProtocolAddressLength((byte) 4).setOpCode(ARP.OP_REPLY)
-                        .setSenderHardwareAddress(vips.get(vipId).proxyMac)
+                        .setSenderHardwareAddress(MacAddress.of(macAddress))
                         .setSenderProtocolAddress(arpRequest.getTargetProtocolAddress())
                         .setTargetHardwareAddress(eth.getSourceMACAddress())
                         .setTargetProtocolAddress(arpRequest.getSenderProtocolAddress()));
@@ -174,9 +172,111 @@ public class NAT implements IOFMessageListener, IFloodlightModule {
                 (pi.getVersion().compareTo(OFVersion.OF_12) < 0 ? pi.getInPort()
                         : pi.getMatch().get(MatchField.IN_PORT)),
                 cntx, true);
-        log.debug("proxy ARP reply pushed as {}", IPv4.fromIPv4Address(vips.get(vipId).address));
 
         return;
+    }
+
+    /**
+     * process ICMP request packets
+     * 
+     * @param IOFSwitch         sw
+     * @param OFPacketIn        pi
+     * @param FloodlightContext cntx
+     */
+    void processIcmpRequest(IOFSwitch sw, OFPacketIn pi, FloodlightContext cntx) {
+        Ethernet eth = IFloodlightProviderService.bcStore.get(cntx, IFloodlightProviderService.CONTEXT_PI_PAYLOAD);
+
+        if (!(eth.getPayload() instanceof IPv4))
+            return;
+        IPv4 ip_pkt = (IPv4) eth.getPayload();
+
+        String destinationIpAddress = ip_pkt.getDestinationAddress().toString();
+        String translatedSourceIpAddress = IPRouterIPMap.get(destinationIpAddress);
+
+        // modify source IP address and reset checksum
+        ip_pkt.setSourceAddress(translatedSourceIpAddress).resetChecksum();
+
+        // generate proxy ICMP request
+        IPacket icmpRequest = new Ethernet()
+                .setSourceMACAddress(MacAddress.of(RouterInterfaceMacMap.get(translatedSourceIpAddress)))
+                .setDestinationMACAddress(MacAddress.of(IPMacMap.get(destinationIpAddress))).setEtherType(EthType.IPv4)
+                .setVlanID(eth.getVlanID()).setPriorityCode(eth.getPriorityCode()).setPayload(ip_pkt);
+
+        // push ICMP request out
+        pushPacket(icmpRequest, sw, OFBufferId.NO_BUFFER, OFPort.ANY, IPPortMap.get(destinationIpAddress), cntx, true);
+
+        return;
+    }
+
+    /**
+     * process ICMP reply packets
+     * 
+     * @param IOFSwitch         sw
+     * @param OFPacketIn        pi
+     * @param FloodlightContext cntx
+     * @param String            destinationIpAddress
+     */
+    protected void processIcmpReply(IOFSwitch sw, OFPacketIn pi, FloodlightContext cntx, String destinationIpAddress) {
+        Ethernet eth = IFloodlightProviderService.bcStore.get(cntx, IFloodlightProviderService.CONTEXT_PI_PAYLOAD);
+
+        if (!(eth.getPayload() instanceof IPv4))
+            return;
+        IPv4 ip_pkt = (IPv4) eth.getPayload();
+
+        // modify destination IP address and reset checksum
+        ip_pkt.setDestinationAddress(destinationIpAddress).resetChecksum();
+
+        // generate proxy ICMP reply
+        IPacket icmpReply = new Ethernet().setSourceMACAddress(eth.getSourceMACAddress())
+                .setDestinationMACAddress(MacAddress.of(IPMacMap.get(destinationIpAddress))).setEtherType(EthType.IPv4)
+                .setVlanID(eth.getVlanID()).setPriorityCode(eth.getPriorityCode()).setPayload(ip_pkt);
+
+        // push ICMP reply packget out
+        pushPacket(icmpReply, sw, OFBufferId.NO_BUFFER, OFPort.ANY, IPPortMap.get(destinationIpAddress), cntx, true);
+
+        return;
+    }
+
+    /**
+     * used to push any packet - borrowed routine from Forwarding
+     * 
+     * @param OFPacketIn        pi
+     * @param IOFSwitch         sw
+     * @param int               bufferId
+     * @param short             inPort
+     * @param short             outPort
+     * @param FloodlightContext cntx
+     * @param boolean           flush
+     */
+    public void pushPacket(IPacket packet, IOFSwitch sw, OFBufferId bufferId, OFPort inPort, OFPort outPort,
+            FloodlightContext cntx, boolean flush) {
+        if (logger.isTraceEnabled()) {
+            logger.trace("PacketOut srcSwitch={} inPort={} outPort={}", new Object[] { sw, inPort, outPort });
+        }
+
+        OFPacketOut.Builder pob = sw.getOFFactory().buildPacketOut();
+
+        // set actions
+        List<OFAction> actions = new ArrayList<OFAction>();
+        actions.add(sw.getOFFactory().actions().buildOutput().setPort(outPort).setMaxLen(Integer.MAX_VALUE).build());
+
+        pob.setActions(actions);
+
+        // set buffer_id, in_port
+        pob.setBufferId(bufferId);
+        pob.setInPort(inPort);
+
+        // set data - only if buffer_id == -1
+        if (pob.getBufferId() == OFBufferId.NO_BUFFER) {
+            if (packet == null) {
+                logger.error("BufferId is not set and packet data is null. " + "Cannot send packetOut. "
+                        + "srcSwitch={} inPort={} outPort={}", new Object[] { sw, inPort, outPort });
+                return;
+            }
+            byte[] packetData = packet.serialize();
+            pob.setData(packetData);
+        }
+        sw.write(pob.build());
     }
 
     @Override
@@ -230,10 +330,28 @@ public class NAT implements IOFMessageListener, IFloodlightModule {
         IPMacMap.put("192.168.0.10", "00:00:00:00:00:01");
         IPMacMap.put("192.168.0.20", "00:00:00:00:00:02");
         IPMacMap.put("10.0.0.11", "00:00:00:00:00:03");
+
+        // Client/Server IP to Router IP mappings
+        IPRouterIPMap.put("192.168.0.10", "192.168.0.1");
+        IPRouterIPMap.put("192.168.0.20", "192.168.0.2");
+        IPRouterIPMap.put("10.0.0.11", "10.0.0.1");
     }
 
     @Override
     public void startUp(FloodlightModuleContext context) throws FloodlightModuleException {
         floodlightProvider.addOFMessageListener(OFType.PACKET_IN, this);
+
+        // execute task every 5 seconds to clear query id for timeout query id sesstions
+        ScheduledExecutorService scheduledExecutorService = Executors.newScheduledThreadPool(1);
+        scheduledExecutorService.scheduleAtFixedRate(() -> {
+            long currentTimeMillisecond = System.currentTimeMillis();
+            for (Map.Entry<Integer, Long> entry : queryIDToTimeoutMap.entrySet()) {
+                if ((currentTimeMillisecond - entry.getValue()) > QUERY_ID_TIMEOUT_MILLISECOND) {
+                    queryIDToTimeoutMap.remove(entry.getKey());
+                    queryIDToSourceIPMap.remove(entry.getKey());
+                    logger.info("Removed Query ID {}", entry.getKey());
+                }
+            }
+        }, 5, 5, TimeUnit.SECONDS);
     }
 }

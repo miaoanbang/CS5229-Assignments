@@ -1,4 +1,5 @@
 .vscode/*
 *.png
 floodlight-master/*
+floodlight/*
 *.zip
