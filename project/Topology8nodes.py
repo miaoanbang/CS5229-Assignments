@@ -13,7 +13,7 @@ import os
 myBandwidth = 100
 myDelay = '5ms'
 myQueueSize = 1000
-myLossPercentage = 1
+myLossPercentage = 0
 
 class BellTopo( Topo ):
     "Single switch connected to n hosts."
